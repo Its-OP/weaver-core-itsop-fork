@@ -96,7 +96,7 @@ parser.add_argument('--samples-per-epoch', type=int, default=None,
 parser.add_argument('--samples-per-epoch-val', type=int, default=None,
                     help='number of samples per epochs for validation; '
                          'if neither of `--steps-per-epoch-val` or `--samples-per-epoch-val` is set, each epoch will run over all loaded samples')
-parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger'],  # TODO: add more
+parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger', 'lion'],  # TODO: add more
                     help='optimizer for the training')
 parser.add_argument('--optimizer-option', nargs=2, action='append', default=[],
                     help='options to pass to the optimizer class constructor, e.g., `--optimizer-option weight_decay 1e-4`')
@@ -483,6 +483,9 @@ def optim(args, model, device):
         opt = torch.optim.AdamW(parameters, lr=args.start_lr, **optimizer_options)
     elif args.optimizer == 'radam':
         opt = torch.optim.RAdam(parameters, lr=args.start_lr, **optimizer_options)
+    elif args.optimizer == 'lion':
+        from weaver.utils.nn.optimizer.lion import Lion
+        opt = Lion(parameters, lr=args.start_lr, **optimizer_options)
 
     # load previous training and resume if `--load-epoch` is set
     if args.load_epoch is not None:
