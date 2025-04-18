@@ -541,7 +541,7 @@ def optim(args, model, device):
             total_steps = args.num_epochs * args.steps_per_epoch
             warmup_steps = args.warmup_steps
             flat_steps = total_steps * 0.2 - 1
-            min_factor = 0.001
+            min_factor = 0.05
 
             def lr_fn(step_num):
                 if step_num > total_steps:
