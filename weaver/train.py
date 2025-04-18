@@ -96,7 +96,7 @@ parser.add_argument('--samples-per-epoch', type=int, default=None,
 parser.add_argument('--samples-per-epoch-val', type=int, default=None,
                     help='number of samples per epochs for validation; '
                          'if neither of `--steps-per-epoch-val` or `--samples-per-epoch-val` is set, each epoch will run over all loaded samples')
-parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger', 'lion'],  # TODO: add more
+parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger', 'lion', 'shampoo'],  # TODO: add more
                     help='optimizer for the training')
 parser.add_argument('--optimizer-option', nargs=2, action='append', default=[],
                     help='options to pass to the optimizer class constructor, e.g., `--optimizer-option weight_decay 1e-4`')
@@ -486,6 +486,21 @@ def optim(args, model, device):
     elif args.optimizer == 'lion':
         from weaver.utils.nn.optimizer.lion import Lion
         opt = Lion(parameters, lr=args.start_lr, **optimizer_options)
+    elif args.optimizer == 'shampoo':
+        from distributed_shampoo import DistributedShampoo, AdamGraftingConfig
+        graft_cfg = AdamGraftingConfig(beta2=0.999, epsilon=1e-8)
+        opt = DistributedShampoo(
+            parameters,                      # or model.parameters()
+            lr=args.start_lr,                # keep the same LR schedule
+            betas=(0.9, 0.999),              # Adam/AdamW values
+            epsilon=1e-12,                   # Shampoo default
+            use_decoupled_weight_decay=True, # AdamW‑style WD
+            grafting_config=graft_cfg,       # graft LR from Adam
+            precondition_frequency=100,      # recompute inverse every 100 steps
+            start_preconditioning_step=100,  # first 100 steps = pure Adam
+            max_preconditioner_dim=4096,     # good for small nets
+            **optimizer_options              # weight_decay, momentum, etc.
+        )
 
     # load previous training and resume if `--load-epoch` is set
     if args.load_epoch is not None:
