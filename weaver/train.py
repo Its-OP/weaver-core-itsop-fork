@@ -525,7 +525,7 @@ def optim(args, model, device):
                 opt, milestones=[lr_step, 2 * lr_step], gamma=0.1,
                 last_epoch=-1 if args.load_epoch is None else args.load_epoch)
         elif args.lr_scheduler == 'flat+decay':
-            num_decay_epochs = max(1, int(args.num_epochs * 0.6))
+            num_decay_epochs = max(1, int(args.num_epochs * 0.8))
             milestones = list(range(args.num_epochs - num_decay_epochs, args.num_epochs))
             gamma = 0.01 ** (1. / num_decay_epochs)
             if len(names_lr_mult):
@@ -541,7 +541,7 @@ def optim(args, model, device):
             total_steps = args.num_epochs * args.steps_per_epoch
             warmup_steps = args.warmup_steps
             flat_steps = total_steps * 0.2 - 1
-            min_factor = 0.08
+            min_factor = 0.01
 
             def lr_fn(step_num):
                 if step_num > total_steps:
