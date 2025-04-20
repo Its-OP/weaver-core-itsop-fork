@@ -495,7 +495,7 @@ def optim(args, model, device):
             **optimizer_options              # weight_decay, momentum, etc.
         )
     elif args.optimizer == 'soap':
-        from weaver.utils.nn.optimizer.soap import SOAP
+        from torch_optimizer import SOAP
         opt = SOAP(model.parameters(),
                    lr=args.start_lr,
                    betas=(0.95, 0.95),
