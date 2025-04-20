@@ -499,6 +499,7 @@ def optim(args, model, device):
             precondition_frequency=100,      # recompute inverse every 100 steps
             start_preconditioning_step=100,  # first 100 steps = pure Adam
             max_preconditioner_dim=4096,     # good for small nets
+            distributed_config=None,
             **optimizer_options              # weight_decay, momentum, etc.
         )
 
