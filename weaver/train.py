@@ -564,6 +564,7 @@ def optim(args, model, device):
                 opt, lr_fn, last_epoch=-1 if args.load_epoch is None else args.load_epoch * args.steps_per_epoch)
             scheduler._update_per_step = True  # mark it to update the lr every step, instead of every epoch
         elif args.lr_scheduler == 'one-cycle':
+            
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 opt, max_lr=args.start_lr, epochs=args.num_epochs, steps_per_epoch=args.steps_per_epoch, pct_start=0.3,
                 anneal_strategy='cos', div_factor=25.0, last_epoch=-1 if args.load_epoch is None else args.load_epoch)
