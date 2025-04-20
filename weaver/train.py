@@ -487,19 +487,11 @@ def optim(args, model, device):
         from weaver.utils.nn.optimizer.lion import Lion
         opt = Lion(parameters, lr=args.start_lr, **optimizer_options)
     elif args.optimizer == 'shampoo':
-        from distributed_shampoo import DistributedShampoo, AdamGraftingConfig, DDPShampooConfig
-        graft_cfg = AdamGraftingConfig(beta2=0.999, epsilon=1e-8)
-        opt = DistributedShampoo(
+        from torch_optimizer import Shampoo
+        opt = Shampoo(
             parameters,                      # or model.parameters()
             lr=args.start_lr,                # keep the same LR schedule
-            betas=(0.9, 0.999),              # Adam/AdamW values
-            epsilon=1e-12,                   # Shampoo default
-            use_decoupled_weight_decay=True, # AdamW‑style WD
-            grafting_config=graft_cfg,       # graft LR from Adam
-            precondition_frequency=100,      # recompute inverse every 100 steps
-            start_preconditioning_step=100,  # first 100 steps = pure Adam
-            max_preconditioner_dim=4096,     # good for small nets
-            distributed_config=DDPShampooConfig(num_trainers_per_group=1),
+            epsilon=1e-12,
             **optimizer_options              # weight_decay, momentum, etc.
         )
 
