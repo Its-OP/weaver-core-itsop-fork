@@ -487,7 +487,7 @@ def optim(args, model, device):
         from weaver.utils.nn.optimizer.lion import Lion
         opt = Lion(parameters, lr=args.start_lr, **optimizer_options)
     elif args.optimizer == 'shampoo':
-        from torch_optimizer import Shampoo
+        from pytorch_optimizer  import Shampoo
         opt = Shampoo(
             parameters,                      # or model.parameters()
             lr=args.start_lr,                # keep the same LR schedule
@@ -495,7 +495,7 @@ def optim(args, model, device):
             **optimizer_options              # weight_decay, momentum, etc.
         )
     elif args.optimizer == 'soap':
-        from torch_optimizer import SOAP
+        from pytorch_optimizer  import SOAP
         opt = SOAP(model.parameters(),
                    lr=args.start_lr,
                    betas=(0.95, 0.95),
