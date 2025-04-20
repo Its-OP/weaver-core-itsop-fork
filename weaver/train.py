@@ -96,7 +96,7 @@ parser.add_argument('--samples-per-epoch', type=int, default=None,
 parser.add_argument('--samples-per-epoch-val', type=int, default=None,
                     help='number of samples per epochs for validation; '
                          'if neither of `--steps-per-epoch-val` or `--samples-per-epoch-val` is set, each epoch will run over all loaded samples')
-parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger', 'lion', 'shampoo'],  # TODO: add more
+parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger', 'lion', 'shampoo', 'soap'],  # TODO: add more
                     help='optimizer for the training')
 parser.add_argument('--optimizer-option', nargs=2, action='append', default=[],
                     help='options to pass to the optimizer class constructor, e.g., `--optimizer-option weight_decay 1e-4`')
@@ -493,6 +493,15 @@ def optim(args, model, device):
             lr=args.start_lr,                # keep the same LR schedule
             epsilon=1e-12,
             **optimizer_options              # weight_decay, momentum, etc.
+        )
+    elif args.optimizer == 'soap':
+        from weaver.utils.nn.optimizer.soap import SOAP
+        opt = SOAP(model.parameters(),
+                   lr=args.start_lr,
+                   betas=(0.95, 0.95),
+                   precondition_frequency=10,  # default, good starting point
+                   max_precond_dim=10_000,
+                   **optimizer_options
         )
 
     # load previous training and resume if `--load-epoch` is set
