@@ -199,11 +199,7 @@ class SequenceTrimmer(nn.Module):
                 self._counter += 1
             else:
                 if self.training:
-                    device_var = next(self.parameters()).device
-                    q = torch.minimum(
-                        torch.tensor(1.0, device=device_var),
-                        torch.empty(1, device=device_var).uniform_(*self.target)[0]
-                    )
+                    q = min(1, random.uniform(*self.target))
                     maxlen = torch.quantile(mask.type_as(x).sum(dim=-1), q).long()
                     rand = torch.rand_like(mask.type_as(x))
                     rand.masked_fill_(~mask, -1)
