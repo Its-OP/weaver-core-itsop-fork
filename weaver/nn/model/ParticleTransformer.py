@@ -185,7 +185,6 @@ class SequenceTrimmer(nn.Module):
         self.target = target
         self._counter = 0
 
-    @torch.compiler.disable
     def forward(self, x, v=None, mask=None, uu=None):
         # x: (N, C, P)
         # v: (N, 4, P) [px,py,pz,energy]
