@@ -145,6 +145,7 @@ parser.add_argument('--backend', type=str, choices=['gloo', 'nccl', 'mpi'], defa
                     help='backend for distributed training')
 parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
+parser.add_argument('--compile', action='store_true', default=True)
 
 
 def to_filelist(args, mode='train'):
@@ -825,49 +826,52 @@ def _main(args):
             )
             # compile *after* wrap, disable cudagraphs for NCCL
             _logger.info('Compiling under the Distributed Data Parallel setup...')
-            model = torch.compile(
-                model,
-                backend=args.backend,
-                fullgraph=False,
-                dynamic=None,
-                options={
-                    "triton.cudagraphs": True,  # kill Python launch overhead
-                    "shape_padding": True,
-                    "max_autotune": True,  # Moved from mode to options
-                },
+            if args.compile:
+                model = torch.compile(
+                    model,
+                    backend=args.backend,
+                    fullgraph=False,
+                    dynamic=None,
+                    options={
+                        "triton.cudagraphs": True,  # kill Python launch overhead
+                        "shape_padding": True,
+                        "max_autotune": True,  # Moved from mode to options
+                    },
             )
 
         elif gpus is not None and len(gpus) > 1:
             # ——— DataParallel path ———
             # compile the bare model first (so you fuse kernels, not DP scatter/gather)
             _logger.info('Compiling under the Data Parallel setup...')
-            model = torch.compile(
-                model,
-                backend="inductor",
-                fullgraph=True,
-                dynamic=None,
-                options={
-                    "triton.cudagraphs": True,  # kill Python launch overhead
-                    "shape_padding": True,
-                    "max_autotune": True,  # Moved from mode to options
-                },
-            )
+            if args.compile:
+                model = torch.compile(
+                    model,
+                    backend="inductor",
+                    fullgraph=True,
+                    dynamic=None,
+                    options={
+                        "triton.cudagraphs": True,  # kill Python launch overhead
+                        "shape_padding": True,
+                        "max_autotune": True,  # Moved from mode to options
+                    },
+                )
             model = torch.nn.DataParallel(model, device_ids=gpus)
 
         else:
             # ——— single‑GPU path ———
             _logger.info('Compiling under the Single GPU setup...')
-            model = torch.compile(
-                model,
-                backend="inductor",
-                fullgraph=True,      # fuse everything
-                dynamic=None,
-                options={
-                    "triton.cudagraphs": True,  # kill Python launch overhead
-                    "shape_padding": True,
-                    "max_autotune": True,  # Moved from mode to options
-                },
-            )
+            if args.compile:
+                model = torch.compile(
+                    model,
+                    backend="inductor",
+                    fullgraph=True,      # fuse everything
+                    dynamic=None,
+                    options={
+                        "triton.cudagraphs": True,  # kill Python launch overhead
+                        "shape_padding": True,
+                        "max_autotune": True,  # Moved from mode to options
+                    },
+                )
         
         _logger.info('Compilation finished')
             
