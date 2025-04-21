@@ -847,7 +847,7 @@ def _main(args):
                 model = torch.compile(
                     model,
                     backend="inductor",
-                    fullgraph=False,
+                    fullgraph=True,
                     dynamic=None,
                     options={
                         "triton.cudagraphs": True,  # kill Python launch overhead
