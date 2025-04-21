@@ -618,16 +618,6 @@ def model_setup(args, data_config, device='cpu'):
                          '\n - '.join([name for name, p in model.named_parameters() if not p.requires_grad]))
     # _logger.info(model)
     flops(model, model_info, device=device)
-    if args.gpus and len(args.gpus.split(',')) > 1:
-        model = torch.compile(model,
-                              backend="inductor",
-                              mode="max-autotune",
-                              fullgraph=True,
-                              dynamic=None,
-                              options={
-                                  "triton.cudagraphs": True,
-                                  "shape_padding": True,
-                              })
     # loss function
     try:
         loss_func = network_module.get_loss(data_config, **network_options)
@@ -636,7 +626,7 @@ def model_setup(args, data_config, device='cpu'):
         loss_func = torch.nn.CrossEntropyLoss()
         _logger.warning('Loss function not defined in %s. Will use `torch.nn.CrossEntropyLoss()` by default.',
                         args.network_config)
-    return model_compiled, model_info, loss_func
+    return model, model_info, loss_func
 
 
 def iotest(args, data_loader):
@@ -821,20 +811,59 @@ def _main(args):
     if training_mode:
         model = orig_model.to(dev)
 
-        # DistributedDataParallel
         if args.backend is not None:
+            # ——— DDP path ———
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=gpus, output_device=local_rank, find_unused_parameters=True)
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=gpus,
+                output_device=local_rank,
+                find_unused_parameters=False
+            )
+            # compile *after* wrap, disable cudagraphs for NCCL
+            model = torch.compile(
+                model,
+                backend=args.backend,
+                mode="max-autotune",
+                fullgraph=False,
+                dynamic=None,
+                options={
+                    "triton.cudagraphs": False,
+                    "shape_padding": True,
+                },
+            )
 
-        # optimizer & learning rate
+        elif gpus is not None and len(gpus) > 1:
+            # ——— DataParallel path ———
+            # compile the bare model first (so you fuse kernels, not DP scatter/gather)
+            model = torch.compile(
+                model,
+                backend="inductor",
+                mode="max-autotune",
+                fullgraph=True,
+                dynamic=None,
+                options={
+                    "triton.cudagraphs": True,
+                    "shape_padding": True,
+                },
+            )
+            model = torch.nn.DataParallel(model, device_ids=gpus)
+
+        else:
+            # ——— single‑GPU path ———
+            model = torch.compile(
+                model,
+                backend="inductor",
+                mode="max-autotune",
+                fullgraph=True,      # fuse everything
+                dynamic=None,
+                options={
+                    "triton.cudagraphs": True,  # kill Python launch overhead
+                    "shape_padding": True,
+                },
+            )
+            
         opt, scheduler = optim(args, model, dev)
-
-        # DataParallel
-        if args.backend is None:
-            if gpus is not None and len(gpus) > 1:
-                # model becomes `torch.nn.DataParallel` w/ model.module being the original `torch.nn.Module`
-                model = torch.nn.DataParallel(model, device_ids=gpus)
-            # model = model.to(dev)
 
         # lr finder: keep it after all other setups
         if args.lr_finder is not None:
