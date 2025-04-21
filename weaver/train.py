@@ -825,9 +825,13 @@ def _main(args):
             model = torch.compile(
                 model,
                 backend=args.backend,
-                mode="max-autotune",
                 fullgraph=False,
-                dynamic=None
+                dynamic=None,
+                options={
+                    "triton.cudagraphs": True,  # kill Python launch overhead
+                    "shape_padding": True,
+                    "max_autotune": True,  # Moved from mode to options
+                },
             )
 
         elif gpus is not None and len(gpus) > 1:
@@ -837,9 +841,13 @@ def _main(args):
             model = torch.compile(
                 model,
                 backend="inductor",
-                mode="max-autotune",
                 fullgraph=True,
-                dynamic=None
+                dynamic=None,
+                options={
+                    "triton.cudagraphs": True,  # kill Python launch overhead
+                    "shape_padding": True,
+                    "max_autotune": True,  # Moved from mode to options
+                },
             )
             model = torch.nn.DataParallel(model, device_ids=gpus)
 
@@ -849,9 +857,13 @@ def _main(args):
             model = torch.compile(
                 model,
                 backend="inductor",
-                mode="max-autotune",
                 fullgraph=True,      # fuse everything
-                dynamic=None
+                dynamic=None,
+                options={
+                    "triton.cudagraphs": True,  # kill Python launch overhead
+                    "shape_padding": True,
+                    "max_autotune": True,  # Moved from mode to options
+                },
             )
         
         _logger.info('Compilation finished')
