@@ -65,7 +65,7 @@ class ColoredLogger():
     def warning(self, msg, *args, color=None, **kwargs):
         if color:
             msg = self.colorize(msg, color)
-        self.logger.warning(msg, *args, **kwargs)
+        # self.logger.warning(msg, *args, **kwargs)
 
     def error(self, msg, *args, color=None, **kwargs):
         if color:
@@ -81,6 +81,6 @@ _warning_counter = {}
 def warn_n_times(msg, n=10, logger=_logger):
     if msg not in _warning_counter:
         _warning_counter[msg] = 0
-    if _warning_counter[msg] < n:
-        logger.warning(msg)
+    # if _warning_counter[msg] < n:
+    #     logger.warning(msg)
     _warning_counter[msg] += 1
