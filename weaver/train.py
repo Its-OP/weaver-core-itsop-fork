@@ -18,7 +18,7 @@ from weaver.utils.dataset import SimpleIterDataset
 from weaver.utils.import_tools import import_module
 
 import warnings
-torch._dynamo.disallow_in_graph(warnings.warn)
+warnings.filterwarnings('ignore')  # Ignore all warnings to prevent compiler errors
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--regression-mode', action='store_true', default=False,
