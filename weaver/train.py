@@ -519,8 +519,8 @@ def optim(args, model, device):
         if os.path.exists(opt_state_file):
             opt_state = torch.load(opt_state_file, map_location=device)
             opt.load_state_dict(opt_state)
-        # else:
-        #     _logger.warning('Optimizer state file %s NOT found!' % opt_state_file)
+        else:
+            _logger.warning('Optimizer state file %s NOT found!' % opt_state_file)
 
     scheduler = None
     if args.lr_finder is None:
@@ -627,8 +627,8 @@ def model_setup(args, data_config, device='cpu'):
         _logger.info('Using loss function %s with options %s' % (loss_func, network_options))
     except AttributeError:
         loss_func = torch.nn.CrossEntropyLoss()
-        # _logger.warning('Loss function not defined in %s. Will use `torch.nn.CrossEntropyLoss()` by default.',
-        #                 args.network_config)
+        _logger.warning('Loss function not defined in %s. Will use `torch.nn.CrossEntropyLoss()` by default.',
+                        args.network_config)
     return model, model_info, loss_func
 
 
@@ -739,8 +739,8 @@ def _main(args):
         onnx(args)
         return
 
-    # if args.file_fraction < 1:
-    #     _logger.warning('Use of `file-fraction` is not recommended in general -- prefer using `data-fraction` instead.')
+    if args.file_fraction < 1:
+        _logger.warning('Use of `file-fraction` is not recommended in general -- prefer using `data-fraction` instead.')
 
     # classification/regression mode
     if args.regression_mode:

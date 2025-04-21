@@ -128,7 +128,7 @@ class AutoStandardizer(object):
                     a = ak.to_numpy(ak.flatten(table[k], axis=None))
                     # check for NaN
                     if np.any(np.isnan(a)):
-                        # _logger.warning('[AutoStandardizer] Found NaN in `%s`, will convert it to 0.', k)
+                        _logger.warning('[AutoStandardizer] Found NaN in `%s`, will convert it to 0.', k)
                         time.sleep(10)
                         a = np.nan_to_num(a)
                     low, center, high = np.percentile(a, [16, 50, 84])
@@ -230,11 +230,11 @@ class WeightMaker(object):
             raw_hists[label] = hist.astype('float32')
             result[label] = hist.astype('float32')
         if sum_evts != len(table):
-            # _logger.warning(
-            #     'Only %d (out of %d) events actually used in the reweighting. '
-            #     'Check consistency between `selection` and `reweight_classes` definition, or with the `reweight_vars` binnings '
-            #     '(under- and overflow bins are discarded by default, unless `reweight_discard_under_overflow` is set to `False` in the `weights` section).',
-            #     sum_evts, len(table))
+            _logger.warning(
+                'Only %d (out of %d) events actually used in the reweighting. '
+                'Check consistency between `selection` and `reweight_classes` definition, or with the `reweight_vars` binnings '
+                '(under- and overflow bins are discarded by default, unless `reweight_discard_under_overflow` is set to `False` in the `weights` section).',
+                sum_evts, len(table))
             time.sleep(10)
 
         if self._data_config.reweight_method == 'flat':
