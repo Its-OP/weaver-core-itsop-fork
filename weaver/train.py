@@ -618,6 +618,16 @@ def model_setup(args, data_config, device='cpu'):
                          '\n - '.join([name for name, p in model.named_parameters() if not p.requires_grad]))
     # _logger.info(model)
     flops(model, model_info, device=device)
+    if args.gpus and len(args.gpus.split(',')) > 1:
+        model = torch.compile(model,
+                              backend="inductor",
+                              mode="max-autotune",
+                              fullgraph=True,
+                              dynamic=None,
+                              options={
+                                  "triton.cudagraphs": True,
+                                  "shape_padding": True,
+                              })
     # loss function
     try:
         loss_func = network_module.get_loss(data_config, **network_options)
@@ -626,7 +636,7 @@ def model_setup(args, data_config, device='cpu'):
         loss_func = torch.nn.CrossEntropyLoss()
         _logger.warning('Loss function not defined in %s. Will use `torch.nn.CrossEntropyLoss()` by default.',
                         args.network_config)
-    return model, model_info, loss_func
+    return model_compiled, model_info, loss_func
 
 
 def iotest(args, data_loader):
