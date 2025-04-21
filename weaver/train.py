@@ -17,6 +17,9 @@ from weaver.utils.logger import _logger, _configLogger
 from weaver.utils.dataset import SimpleIterDataset
 from weaver.utils.import_tools import import_module
 
+import warnings
+warnings.filterwarnings('ignore')  # Ignore all warnings to prevent compiler errors
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--regression-mode', action='store_true', default=False,
                     help='run in regression mode if this flag is set; otherwise run in classification mode')
