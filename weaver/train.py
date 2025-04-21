@@ -821,6 +821,7 @@ def _main(args):
                 find_unused_parameters=False
             )
             # compile *after* wrap, disable cudagraphs for NCCL
+            _logger.info('Compiling under the Distributed Data Parallel setup...')
             model = torch.compile(
                 model,
                 backend=args.backend,
@@ -836,6 +837,7 @@ def _main(args):
         elif gpus is not None and len(gpus) > 1:
             # ——— DataParallel path ———
             # compile the bare model first (so you fuse kernels, not DP scatter/gather)
+            _logger.info('Compiling under the Data Parallel setup...')
             model = torch.compile(
                 model,
                 backend="inductor",
@@ -851,6 +853,7 @@ def _main(args):
 
         else:
             # ——— single‑GPU path ———
+            _logger.info('Compiling under the Single GPU setup...')
             model = torch.compile(
                 model,
                 backend="inductor",
@@ -862,6 +865,8 @@ def _main(args):
                     "shape_padding": True,
                 },
             )
+        
+        _logger.info('Compilation finished')
             
         opt, scheduler = optim(args, model, dev)
 
