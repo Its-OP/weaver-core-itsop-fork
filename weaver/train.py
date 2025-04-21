@@ -815,7 +815,6 @@ def _main(args):
     if training_mode:
         model = orig_model.to(dev)
 
-        torch._dynamo.config.suppress_errors = True
         if args.backend is not None:
             # ——— DDP path ———
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
