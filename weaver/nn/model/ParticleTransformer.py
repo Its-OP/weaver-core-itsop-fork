@@ -416,43 +416,48 @@ class QKNormMultiheadAttention(nn.Module):
         S = x.size(1)
         return x.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
-    def _merge_masks(self, attn_mask: Tensor | None,
-                     key_padding_mask: Tensor | None,
-                     B: int, H: int, Lq: int, Lk: int,
-                     dtype: torch.dtype, device: torch.device) -> Tensor | None:
-        """Return a (B,H,Lq,Lk) float mask with -inf in the banned spots."""
-        if key_padding_mask is not None:                      # (B,Lk) bool/float
-            kpm = key_padding_mask.unsqueeze(1).unsqueeze(2)  # (B,1,1,Lk)
-            if kpm.dtype == torch.bool:
-                kpm = kpm.logical_not().to(dtype).mul(torch.finfo(dtype).min)
-            else:
-                kpm = kpm.to(dtype)
-            attn_mask = kpm if attn_mask is None else (
-                    kpm + (attn_mask if attn_mask.dtype != torch.bool
-                           else attn_mask.logical_not().to(dtype)
-                           .mul(torch.finfo(dtype).min)))
-    
-        if attn_mask is None:
-            return None
-    
-        # --- boolean → additive float ----------------------------------------
-        if attn_mask.dtype == torch.bool:
-            attn_mask = attn_mask.logical_not().to(dtype) * torch.finfo(dtype).min
-        else:
-            attn_mask = attn_mask.to(dtype)
-    
-        # --- make it 4-D ------------------------------------------------------
-        if attn_mask.dim() == 2:               # (Lq,Lk)
-            attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
-        elif attn_mask.dim() == 3:             # (B,Lq,Lk) or (H,Lq,Lk)
-            if attn_mask.size(0) == B:         # (B,Lq,Lk)
-                attn_mask = attn_mask.unsqueeze(1)
-            else:                              # (H,Lq,Lk)
-                attn_mask = attn_mask.unsqueeze(0)
-        # 4-D masks stay as-is
-    
-        # --- explicit broadcast ----------------------------------------------
-        attn_mask = attn_mask.expand(B, H, Lq, Lk).to(device)
+    def _expand_attn_mask(
+            self,
+            attn_mask: torch.Tensor | None,
+            key_padding_mask: torch.Tensor | None,
+            B: int,
+            S_q: int,
+            S_kv: int,
+            device: torch.device,
+    ) -> torch.Tensor | None:
+        """
+        Return a mask broadcastable to (B, H, S_q, S_kv).
+
+        *  attn_mask may come in as
+              • (S_q, S_kv)         — causal/diagonal/etc.
+              • (B, S_q, S_kv)      — per–batch
+              • (B, H, S_q, S_kv)   — already expanded
+        *  key_padding_mask is (B, S_kv)  — “pad” positions of *key/value*.
+        Both masks are converted to boolean where **True = mask / -inf**.
+        The two are OR-combined and returned.
+        """
+        if attn_mask is not None:
+            # convert to bool so we can OR later regardless of original dtype
+            if attn_mask.dtype != torch.bool:
+                attn_mask = attn_mask == float("-inf")
+
+            if attn_mask.dim() == 2:                # (S_q, S_kv)
+                attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)      # (1,1,S_q,S_kv)
+            elif attn_mask.dim() == 3:              # (B, S_q, S_kv)
+                attn_mask = attn_mask.unsqueeze(1)                   # (B,1,S_q,S_kv)
+            elif attn_mask.dim() != 4:
+                raise ValueError("attn_mask must be 2-, 3- or 4-D")
+
+            # repeat across heads
+            attn_mask = attn_mask.expand(B, self.num_heads, -1, -1).to(device)
+
+        if key_padding_mask is not None:
+            # (B, 1, 1, S_kv) → (B, H, S_q, S_kv)
+            kpm = key_padding_mask[:, None, None, :].expand(B, self.num_heads, S_q, S_kv)
+            if kpm.dtype != torch.bool:
+                kpm = kpm != 0
+            attn_mask = kpm if attn_mask is None else attn_mask | kpm
+
         return attn_mask
 
     # -----------------------------------------------------------------------
@@ -471,6 +476,7 @@ class QKNormMultiheadAttention(nn.Module):
         """
         B, S_q, _ = query.shape
         S_kv = key.shape[1]
+        device = query.device
 
         # projections -------------------------------------------------------
         q = self.q_proj(query)
@@ -494,6 +500,10 @@ class QKNormMultiheadAttention(nn.Module):
 
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        
+        attn_mask = self._expand_attn_mask(
+            attn_mask, key_padding_mask, B, S_q, S_kv, device
+        )
 
         # ------------------------------------------------------------------
         if need_weights:       # fallback: manual softmax so we can return α
