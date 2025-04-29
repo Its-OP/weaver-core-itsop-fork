@@ -372,21 +372,21 @@ class PairEmbed(nn.Module):
             y = elements.view(-1, self.out_dim, seq_len, seq_len)
         return y
 
-import math, torch
-from torch import nn, Tensor
-from torch.nn import functional as F
-
-class QKNormSDPAMultiheadAttention(nn.Module):
+class QKNormMultiheadAttention(nn.Module):
     r"""
     Multi-head attention with
-        • ℓ₂-normalised Q & K         (Gemma-3 QKNORM)
-        • learnable scalar g          (nn.Parameter)
-        • optional bias K/V token     (add_bias_kv=True)
-        • Flash / MEM-Eff / Triton SDPA acceleration
-    Batch-first API drop-in for nn.MultiheadAttention.
+      • Query–Key ℓ₂-normalisation
+      • learnable scalar g  (initialised with log2(L²–L))
+      • optional key/value bias token (add_bias_kv=True)
+      • fused SDPA backend (Flash / MEM-Efficient / Triton)
+
+    API matches nn.MultiheadAttention(batch_first=True).
     """
-    def __init__(self, embed_dim: int, num_heads: int,
-                 dropout: float = 0.0, bias: bool = True,
+    def __init__(self,
+                 embed_dim: int,
+                 num_heads: int,
+                 dropout: float = 0.0,
+                 bias: bool = True,
                  add_bias_kv: bool = False,
                  init_seq_len: int = 128):
         super().__init__()
@@ -396,81 +396,69 @@ class QKNormSDPAMultiheadAttention(nn.Module):
         self.dropout = dropout
         self.add_bias_kv = add_bias_kv
 
-        # projections
+        # Projections
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
-        # learnable scale g  (still a Parameter!)
-        g0 = math.log2(init_seq_len**2 - init_seq_len)
+        # Gemma-3 scale g
+        g0 = math.log2(init_seq_len ** 2 - init_seq_len)
         self.g = nn.Parameter(torch.tensor(g0, dtype=torch.float32))
 
-        # optional bias key / value
+        # Optional bias token
         if add_bias_kv:
             self.bias_k = nn.Parameter(torch.zeros(1, 1, embed_dim))
             self.bias_v = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
     # helpers ---------------------------------------------------------------
-    def _shape(self, x: Tensor, B: int) -> Tensor:  # (B,S,E) → (B,H,S,D)
+    def _shape(self, x: Tensor, B: int) -> Tensor:         # (B, S, E) → (B, H, S, D)
         S = x.size(1)
         return x.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
-    def _prepare_mask(self, attn_mask, key_padding_mask, B, H, Lq, Lk):
-        if key_padding_mask is not None:                      # (B,Lk) bool
-            kpm = key_padding_mask[:, None, None, :]          # (B,1,1,Lk)
-            attn_mask = kpm if attn_mask is None else (
-                attn_mask.logical_or(kpm)                     # bool masks
-                if attn_mask.dtype == torch.bool
-                else attn_mask.masked_fill(kpm, float('-inf')))
-    
-        if attn_mask is not None:
-            if attn_mask.dim() == 2:                          # (Lq,Lk)
-                attn_mask = attn_mask[None, None, :, :]       # → (1,1,Lq,Lk)
-            elif attn_mask.dim() == 3:                        # (B,Lq,Lk) or (H,Lq,Lk)
-                if attn_mask.shape[0] == B:                   # (B,Lq,Lk)
-                    attn_mask = attn_mask[:, None, :, :]      # → (B,1,Lq,Lk)
-                else:                                         # (H,Lq,Lk)
-                    attn_mask = attn_mask[None, :, :, :]      # → (1,H,Lq,Lk)
-            # 4-D masks already OK
-        return attn_mask
-
-
     # -----------------------------------------------------------------------
-    def forward(self, query: Tensor, key: Tensor, value: Tensor,
+    def forward(self,
+                query: Tensor,
+                key: Tensor,
+                value: Tensor,
                 attn_mask: Tensor | None = None,
                 key_padding_mask: Tensor | None = None,
                 need_weights: bool = False,
                 is_causal: bool = False):
-        B, L, _ = query.shape
-        S = key.shape[1]
+        """
+        All inputs are (B, S, E) because batch_first=True.
+        When need_weights=True we fall back to a manual soft-max
+        (SDPA does not expose weights). Otherwise we use SDPA.
+        """
+        B, S_q, _ = query.shape
+        S_kv = key.shape[1]
 
-        # linear projections
+        # projections -------------------------------------------------------
         q = self.q_proj(query)
         k = self.k_proj(key)
         v = self.v_proj(value)
 
-        # add bias K/V token if requested ----------------------------------
+        # optional bias token ----------------------------------------------
         if self.add_bias_kv:
-            k = torch.cat([k, self.bias_k.expand(B, -1, -1)], dim=1)
-            v = torch.cat([v, self.bias_v.expand(B, -1, -1)], dim=1)
+            k = torch.cat([k, self.bias_k.repeat(B, 1, 1)], dim=1)  # (B, S_kv+1, E)
+            v = torch.cat([v, self.bias_v.repeat(B, 1, 1)], dim=1)
             if key_padding_mask is not None:
-                pad = torch.zeros((B, 1), dtype=key_padding_mask.dtype,
-                                  device=key_padding_mask.device)
-                key_padding_mask = torch.cat([key_padding_mask, pad], dim=1)
-            S += 1
+                pad_row = torch.zeros((B, 1), dtype=key_padding_mask.dtype,
+                                      device=key_padding_mask.device)
+                key_padding_mask = torch.cat([key_padding_mask, pad_row], dim=1)
+            S_kv += 1
 
-        # split heads + ℓ₂-normalise --------------------------------------
-        q = self._shape(q, B)
-        k = self._shape(k, B)
-        v = self._shape(v, B)
+        # split into heads & ℓ₂-normalise ----------------------------------
+        q: Tensor = self._shape(q, B)             # (B, H, S_q, D)
+        k: Tensor = self._shape(k, B)             # (B, H, S_kv, D)
+        v: Tensor = self._shape(v, B)             # (B, H, S_kv, D)
 
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
         # ------------------------------------------------------------------
-        if need_weights:                 # explicit path so we can return α
-            logits = torch.matmul(q, k.transpose(-2, -1)) * self.g
+        if need_weights:       # fallback: manual softmax so we can return α
+            logits = torch.matmul(q, k.transpose(-2, -1)) * self.g   # (B,H,L,S)
             if attn_mask is not None:
                 logits += attn_mask
             if key_padding_mask is not None:
@@ -478,24 +466,22 @@ class QKNormSDPAMultiheadAttention(nn.Module):
                     key_padding_mask[:, None, None, :], float('-inf'))
             attn = torch.softmax(logits, dim=-1)
             attn = F.dropout(attn, p=self.dropout, training=self.training)
-            out  = torch.matmul(attn, v)
-            out  = out.transpose(1, 2).contiguous().view(B, L, self.embed_dim)
+            out = torch.matmul(attn, v)                                     # (B,H,L,D)
+            out = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
             return self.out_proj(out), attn.mean(dim=1)
 
-        # fast path: SDPA --------------------------------------------------
-        q_scaled = q * self.g                    # <-- learnable scaling
-        attn_mask = self._prepare_mask(attn_mask, key_padding_mask,
-                                  B, self.num_heads, L, S)
+        # fast path: SDPA ---------------------------------------------------
+        q_scaled = q * self.g
         out = F.scaled_dot_product_attention(
             q_scaled, k, v,
             attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=is_causal,
-            scale=1.0,                           # cancel the 1/√d default
-        )
-        out = out.transpose(1, 2).contiguous().view(B, L, self.embed_dim)
-        return self.out_proj(out), None
+            scale=1.0,                      # override default 1/√d
+        )                                                         # (B,H,L,D)
 
+        out = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
+        return self.out_proj(out), None
 
 class Block(nn.Module):
     def __init__(self, embed_dim=128, num_heads=8, ffn_ratio=4,
@@ -510,7 +496,7 @@ class Block(nn.Module):
         self.ffn_dim = embed_dim * ffn_ratio
 
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
-        self.attn = QKNormSDPAMultiheadAttention(
+        self.attn = QKNormMultiheadAttention(
             embed_dim,
             num_heads,
             dropout=attn_dropout,
