@@ -466,17 +466,18 @@ class QKNormMultiheadAttention(nn.Module):
                     key_padding_mask[:, None, None, :], float('-inf'))
             attn = torch.softmax(logits, dim=-1)
             attn = F.dropout(attn, p=self.dropout, training=self.training)
-            out  = torch.matmul(attn, v)                                     # (B,H,L,D)
-            out  = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
+            out = torch.matmul(attn, v)                                     # (B,H,L,D)
+            out = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
             return self.out_proj(out), attn.mean(dim=1)
 
         # fast path: SDPA ---------------------------------------------------
+        q_scaled = q * self.g
         out = F.scaled_dot_product_attention(
-            q, k, v,
+            q_scaled, k, v,
             attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=is_causal,
-            scale=self.g,                      # override default 1/√d
+            scale=1.0,                      # override default 1/√d
         )                                                         # (B,H,L,D)
 
         out = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
