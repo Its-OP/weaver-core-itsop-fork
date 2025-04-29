@@ -416,6 +416,26 @@ class QKNormSDPAMultiheadAttention(nn.Module):
         S = x.size(1)
         return x.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
+    def _prepare_mask(attn_mask, key_padding_mask, B, H, Lq, Lk):
+        if key_padding_mask is not None:                      # (B,Lk) bool
+            kpm = key_padding_mask[:, None, None, :]          # (B,1,1,Lk)
+            attn_mask = kpm if attn_mask is None else (
+                attn_mask.logical_or(kpm)                     # bool masks
+                if attn_mask.dtype == torch.bool
+                else attn_mask.masked_fill(kpm, float('-inf')))
+    
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:                          # (Lq,Lk)
+                attn_mask = attn_mask[None, None, :, :]       # → (1,1,Lq,Lk)
+            elif attn_mask.dim() == 3:                        # (B,Lq,Lk) or (H,Lq,Lk)
+                if attn_mask.shape[0] == B:                   # (B,Lq,Lk)
+                    attn_mask = attn_mask[:, None, :, :]      # → (B,1,Lq,Lk)
+                else:                                         # (H,Lq,Lk)
+                    attn_mask = attn_mask[None, :, :, :]      # → (1,H,Lq,Lk)
+            # 4-D masks already OK
+        return attn_mask
+
+
     # -----------------------------------------------------------------------
     def forward(self, query: Tensor, key: Tensor, value: Tensor,
                 attn_mask: Tensor | None = None,
@@ -448,18 +468,6 @@ class QKNormSDPAMultiheadAttention(nn.Module):
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
-        if attn_mask is not None:
-            # In this branch query can't be a nested tensor, so it has a shape
-            batch_size, seq_len, _ = query.shape
-
-            # Always expands attn_mask to 4D
-            if attn_mask.dim() == 3:
-                attn_mask = attn_mask.view(batch_size, -1, seq_len, seq_len)
-            else:  # attn_mask.dim() == 2:
-                attn_mask = attn_mask.view(1, 1, seq_len, seq_len).expand(
-                    batch_size, self.num_heads, -1, -1
-                )
-
         # ------------------------------------------------------------------
         if need_weights:                 # explicit path so we can return α
             logits = torch.matmul(q, k.transpose(-2, -1)) * self.g
@@ -476,6 +484,8 @@ class QKNormSDPAMultiheadAttention(nn.Module):
 
         # fast path: SDPA --------------------------------------------------
         q_scaled = q * self.g                    # <-- learnable scaling
+        attn_mask = self._prepare_mask(attn_mask, key_padding_mask,
+                                  B, self.num_heads, L, S)
         out = F.scaled_dot_product_attention(
             q_scaled, k, v,
             attn_mask=attn_mask,
