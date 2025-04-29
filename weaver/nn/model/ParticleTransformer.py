@@ -416,7 +416,7 @@ class QKNormSDPAMultiheadAttention(nn.Module):
         S = x.size(1)
         return x.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
-    def _prepare_mask(attn_mask, key_padding_mask, B, H, Lq, Lk):
+    def _prepare_mask(self, attn_mask, key_padding_mask, B, H, Lq, Lk):
         if key_padding_mask is not None:                      # (B,Lk) bool
             kpm = key_padding_mask[:, None, None, :]          # (B,1,1,Lk)
             attn_mask = kpm if attn_mask is None else (
