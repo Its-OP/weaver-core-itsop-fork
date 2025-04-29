@@ -7,7 +7,8 @@ import random
 import warnings
 import copy
 import torch
-import torch.nn as nn
+from torch import nn, Tensor
+from torch.nn import functional as F
 from functools import partial
 
 from weaver.utils.logger import _logger
@@ -371,6 +372,115 @@ class PairEmbed(nn.Module):
             y = elements.view(-1, self.out_dim, seq_len, seq_len)
         return y
 
+class QKNormMultiheadAttention(nn.Module):
+    r"""
+    Multi-head attention with
+      • Query–Key ℓ₂-normalisation
+      • learnable scalar g  (initialised with log2(L²–L))
+      • optional key/value bias token (add_bias_kv=True)
+      • fused SDPA backend (Flash / MEM-Efficient / Triton)
+
+    API matches nn.MultiheadAttention(batch_first=True).
+    """
+    def __init__(self,
+                 embed_dim: int,
+                 num_heads: int,
+                 dropout: float = 0.0,
+                 bias: bool = True,
+                 add_bias_kv: bool = False,
+                 init_seq_len: int = 128):
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        self.embed_dim, self.num_heads = embed_dim, num_heads
+        self.head_dim = embed_dim // num_heads
+        self.dropout = dropout
+        self.add_bias_kv = add_bias_kv
+
+        # Projections
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        # Gemma-3 scale g
+        g0 = math.log2(init_seq_len ** 2 - init_seq_len)
+        self.g = nn.Parameter(torch.tensor(g0, dtype=torch.float32))
+
+        # Optional bias token
+        if add_bias_kv:
+            self.bias_k = nn.Parameter(torch.zeros(1, 1, embed_dim))
+            self.bias_v = nn.Parameter(torch.zeros(1, 1, embed_dim))
+
+    # helpers ---------------------------------------------------------------
+    def _shape(self, x: Tensor, B: int) -> Tensor:         # (B, S, E) → (B, H, S, D)
+        S = x.size(1)
+        return x.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+
+    # -----------------------------------------------------------------------
+    def forward(self,
+                query: Tensor,
+                key: Tensor,
+                value: Tensor,
+                attn_mask: Tensor | None = None,
+                key_padding_mask: Tensor | None = None,
+                need_weights: bool = False,
+                is_causal: bool = False):
+        """
+        All inputs are (B, S, E) because batch_first=True.
+        When need_weights=True we fall back to a manual soft-max
+        (SDPA does not expose weights). Otherwise we use SDPA.
+        """
+        B, S_q, _ = query.shape
+        S_kv = key.shape[1]
+
+        # projections -------------------------------------------------------
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
+
+        # optional bias token ----------------------------------------------
+        if self.add_bias_kv:
+            k = torch.cat([k, self.bias_k.repeat(B, 1, 1)], dim=1)  # (B, S_kv+1, E)
+            v = torch.cat([v, self.bias_v.repeat(B, 1, 1)], dim=1)
+            if key_padding_mask is not None:
+                pad_row = torch.zeros((B, 1), dtype=key_padding_mask.dtype,
+                                      device=key_padding_mask.device)
+                key_padding_mask = torch.cat([key_padding_mask, pad_row], dim=1)
+            S_kv += 1
+
+        # split into heads & ℓ₂-normalise ----------------------------------
+        q: Tensor = self._shape(q, B)             # (B, H, S_q, D)
+        k: Tensor = self._shape(k, B)             # (B, H, S_kv, D)
+        v: Tensor = self._shape(v, B)             # (B, H, S_kv, D)
+
+        q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+        k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        # ------------------------------------------------------------------
+        if need_weights:       # fallback: manual softmax so we can return α
+            logits = torch.matmul(q, k.transpose(-2, -1)) * self.g   # (B,H,L,S)
+            if attn_mask is not None:
+                logits += attn_mask
+            if key_padding_mask is not None:
+                logits = logits.masked_fill(
+                    key_padding_mask[:, None, None, :], float('-inf'))
+            attn = torch.softmax(logits, dim=-1)
+            attn = F.dropout(attn, p=self.dropout, training=self.training)
+            out  = torch.matmul(attn, v)                                     # (B,H,L,D)
+            out  = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
+            return self.out_proj(out), attn.mean(dim=1)
+
+        # fast path: SDPA ---------------------------------------------------
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=is_causal,
+            scale=self.g,                      # override default 1/√d
+        )                                                         # (B,H,L,D)
+
+        out = out.transpose(1, 2).contiguous().view(B, S_q, self.embed_dim)
+        return self.out_proj(out), None
 
 class Block(nn.Module):
     def __init__(self, embed_dim=128, num_heads=8, ffn_ratio=4,
@@ -385,7 +495,7 @@ class Block(nn.Module):
         self.ffn_dim = embed_dim * ffn_ratio
 
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(
+        self.attn = QKNormMultiheadAttention(
             embed_dim,
             num_heads,
             dropout=attn_dropout,
