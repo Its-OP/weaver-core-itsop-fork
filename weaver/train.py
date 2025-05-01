@@ -145,7 +145,7 @@ parser.add_argument('--backend', type=str, choices=['gloo', 'nccl', 'mpi'], defa
                     help='backend for distributed training')
 parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
-parser.add_argument('--compile', action='store_true', default=True)
+parser.add_argument('--compile', action='store_true', default=False)
 
 
 def to_filelist(args, mode='train'):
