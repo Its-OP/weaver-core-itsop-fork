@@ -448,18 +448,6 @@ class QKNormSDPAMultiheadAttention(nn.Module):
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
-        if attn_mask is not None:
-            # In this branch query can't be a nested tensor, so it has a shape
-            batch_size, seq_len, _ = query.shape
-
-            # Always expands attn_mask to 4D
-            if attn_mask.dim() == 3:
-                attn_mask = attn_mask.view(batch_size, -1, seq_len, seq_len)
-            else:  # attn_mask.dim() == 2:
-                attn_mask = attn_mask.view(1, 1, seq_len, seq_len).expand(
-                    batch_size, self.num_heads, -1, -1
-                )
-
         # ------------------------------------------------------------------
         if need_weights:                 # explicit path so we can return α
             logits = torch.matmul(q, k.transpose(-2, -1)) * self.g
