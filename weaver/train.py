@@ -882,6 +882,8 @@ def _main(args):
             _logger.info('Epoch #%d training' % epoch)
 
             warm_X, *_ = next(iter(train_loader))
+            for k in data_config.input_names:
+                print(k, warm_X[k].shape)
             warm_inputs = [warm_X[k].to(dev) for k in data_config.input_names]
             # the particle-count lives on dim=1 if your tensors are (N, P, F)
             for t in warm_inputs:
