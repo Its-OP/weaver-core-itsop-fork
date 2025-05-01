@@ -199,10 +199,7 @@ class SequenceTrimmer(nn.Module):
                 self._counter += 1
             else:
                 if self.training:
-                    q = torch.minimum(
-                        torch.tensor(1.0, device= mask.device),
-                        torch.empty(1, device= mask.device).uniform_(*self.target)[0]
-                    )
+                    q = min(1, random.uniform(*self.target))
                     maxlen = torch.quantile(mask.type_as(x).sum(dim=-1), q).long()
                     rand = torch.rand_like(mask.type_as(x))
                     rand.masked_fill_(~mask, -1)
@@ -552,8 +549,6 @@ class ParticleTransformer(nn.Module):
 
             # transform
             for block in self.blocks:
-                if attn_mask is not None and padding_mask is not None:
-                    attn_mask = attn_mask.to(dtype=padding_mask.dtype)
                 x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token

@@ -854,7 +854,7 @@ def _main(args):
                 model = torch.compile(
                     model,
                     dynamic=True,
-                    backend="aot_eager",
+                    backend="inductor",
                     mode="reduce-overhead")
         
         _logger.info('Compilation finished')
