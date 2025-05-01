@@ -10,7 +10,8 @@ import functools
 import numpy as np
 import math
 import copy
-import torch
+import torch, torch._dynamo as dynamo                     # ← new import
+from itertools import islice
 
 from torch.utils.data import DataLoader
 from weaver.utils.logger import _logger, _configLogger
@@ -826,30 +827,33 @@ def _main(args):
                 find_unused_parameters=False
             )
             # compile *after* wrap, disable cudagraphs for NCCL
-            _logger.info('Compiling under the Distributed Data Parallel setup...')
             if args.compile:
+                _logger.info('Compiling under the Distributed Data Parallel setup...')
                 model = torch.compile(
                     model,
+                    dynamic=True,
                     backend=args.backend,
                     mode="reduce-overhead")
 
         elif gpus is not None and len(gpus) > 1:
             # ——— DataParallel path ———
             # compile the bare model first (so you fuse kernels, not DP scatter/gather)
-            _logger.info('Compiling under the Data Parallel setup...')
             if args.compile:
+                _logger.info('Compiling under the Data Parallel setup...')
                 model = torch.compile(
                     model,
+                    dynamic=True,
                     backend="inductor",
                     mode="reduce-overhead")
             model = torch.nn.DataParallel(model, device_ids=gpus)
 
         else:
             # ——— single‑GPU path ———
-            _logger.info('Compiling under the Single GPU setup...')
             if args.compile:
+                _logger.info('Compiling under the Single GPU setup...')
                 model = torch.compile(
                     model,
+                    dynamic=True,
                     backend="inductor",
                     mode="reduce-overhead")
         
@@ -876,6 +880,16 @@ def _main(args):
                     continue
             _logger.info('-' * 50)
             _logger.info('Epoch #%d training' % epoch)
+
+            warm_X, *_ = next(iter(train_loader))
+            warm_inputs = [warm_X[k].to(dev) for k in data_config.input_names]
+            # the particle-count lives on dim=1 if your tensors are (N, P, F)
+            for t in warm_inputs:
+                dynamo.mark_dynamic(t, 1)                             # (min/max optional)
+            
+            with torch.no_grad():                                     # avoid updating optimiser state
+                model(*warm_inputs)                                   # first graph capture
+            
             train(model, loss_func, opt, scheduler, train_loader, dev, epoch,
                   steps_per_epoch=args.steps_per_epoch, grad_scaler=grad_scaler, tb_helper=tb)
             if args.model_prefix and (args.backend is None or local_rank == 0):
