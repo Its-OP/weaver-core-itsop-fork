@@ -17,6 +17,9 @@ from weaver.utils.logger import _logger, _configLogger
 from weaver.utils.dataset import SimpleIterDataset
 from weaver.utils.import_tools import import_module
 
+import warnings
+warnings.filterwarnings('ignore')  # Ignore all warnings to prevent compiler errors
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--regression-mode', action='store_true', default=False,
                     help='run in regression mode if this flag is set; otherwise run in classification mode')
@@ -142,6 +145,7 @@ parser.add_argument('--backend', type=str, choices=['gloo', 'nccl', 'mpi'], defa
                     help='backend for distributed training')
 parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
+parser.add_argument('--compile', action='store_true', default=True)
 
 
 def to_filelist(args, mode='train'):
@@ -811,20 +815,67 @@ def _main(args):
     if training_mode:
         model = orig_model.to(dev)
 
-        # DistributedDataParallel
         if args.backend is not None:
+            # ——— DDP path ———
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=gpus, output_device=local_rank, find_unused_parameters=True)
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=gpus,
+                output_device=local_rank,
+                find_unused_parameters=False
+            )
+            # compile *after* wrap, disable cudagraphs for NCCL
+            _logger.info('Compiling under the Distributed Data Parallel setup...')
+            if args.compile:
+                model = torch.compile(
+                    model,
+                    backend=args.backend,
+                    fullgraph=False,
+                    dynamic=None,
+                    options={
+                        "triton.cudagraphs": True,  # kill Python launch overhead
+                        "shape_padding": True,
+                        "max_autotune": True,  # Moved from mode to options
+                    },
+            )
 
-        # optimizer & learning rate
+        elif gpus is not None and len(gpus) > 1:
+            # ——— DataParallel path ———
+            # compile the bare model first (so you fuse kernels, not DP scatter/gather)
+            _logger.info('Compiling under the Data Parallel setup...')
+            if args.compile:
+                model = torch.compile(
+                    model,
+                    backend="inductor",
+                    fullgraph=True,
+                    dynamic=None,
+                    options={
+                        "triton.cudagraphs": True,  # kill Python launch overhead
+                        "shape_padding": True,
+                        "max_autotune": True,  # Moved from mode to options
+                    },
+                )
+            model = torch.nn.DataParallel(model, device_ids=gpus)
+
+        else:
+            # ——— single‑GPU path ———
+            _logger.info('Compiling under the Single GPU setup...')
+            if args.compile:
+                model = torch.compile(
+                    model,
+                    backend="inductor",
+                    fullgraph=True,      # fuse everything
+                    dynamic=None,
+                    options={
+                        "triton.cudagraphs": True,  # kill Python launch overhead
+                        "shape_padding": True,
+                        "max_autotune": True,  # Moved from mode to options
+                    },
+                )
+        
+        _logger.info('Compilation finished')
+            
         opt, scheduler = optim(args, model, dev)
-
-        # DataParallel
-        if args.backend is None:
-            if gpus is not None and len(gpus) > 1:
-                # model becomes `torch.nn.DataParallel` w/ model.module being the original `torch.nn.Module`
-                model = torch.nn.DataParallel(model, device_ids=gpus)
-            # model = model.to(dev)
 
         # lr finder: keep it after all other setups
         if args.lr_finder is not None:
