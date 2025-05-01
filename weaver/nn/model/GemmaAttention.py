@@ -174,6 +174,7 @@ class GemmaAttention(nn.Module):
         g0 = math.log2(embed_dim**2 - embed_dim)
         self.sqrt_d = math.sqrt(embed_dim)
         self.g = nn.Parameter(torch.tensor(g0, dtype=torch.float32))
+        self.register_parameter("g", None)
 
         if add_bias_kv:
             self.bias_k = Parameter(torch.empty((1, 1, embed_dim), **factory_kwargs))
