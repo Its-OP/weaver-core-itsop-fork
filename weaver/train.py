@@ -884,10 +884,15 @@ def _main(args):
             warm_X, *_ = next(iter(train_loader))
             for k in data_config.input_names:
                 print(k, warm_X[k].shape)
-            warm_inputs = [warm_X[k].to(dev) for k in data_config.input_names]
-            # the particle-count lives on dim=1 if your tensors are (N, P, F)
-            for t in warm_inputs:
-                dynamo.mark_dynamic(t, 1)                             # (min/max optional)
+                warm_inputs = []
+                for name in data_config.input_names:
+                    t = warm_X[name].to(dev)
+                    warm_inputs.append(t)
+                
+                    if name in ("x", "v"):           # tensors shaped (N, P, F)
+                        dynamo.mark_dynamic(t, 1)    # P-dimension
+                    elif name == "mask":             # shaped (N, P)
+                        dynamo.mark_dynamic(t, 1)                         # (min/max optional)
             
             with torch.no_grad():                                     # avoid updating optimiser state
                 model(*warm_inputs)                                   # first graph capture
