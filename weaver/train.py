@@ -813,6 +813,7 @@ def _main(args):
     orig_model = model
 
     if training_mode:
+        print(f'Compile: {args.compile}')
         model = orig_model.to(dev)
 
         if args.backend is not None:
