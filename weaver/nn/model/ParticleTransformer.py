@@ -237,14 +237,13 @@ class SequenceTrimmer(nn.Module):
                         uu = torch.gather(uu, -1, perm.unsqueeze(-2).expand_as(uu))
                 else:
                     maxlen = mask.sum(dim=-1).max()
-                maxlen = max(maxlen, 1)
-                if maxlen < mask.size(-1):
-                    mask = mask[:, :, :maxlen]
-                    x = x[:, :, :maxlen]
-                    if v is not None:
-                        v = v[:, :, :maxlen]
-                    if uu is not None:
-                        uu = uu[:, :, :maxlen, :maxlen]
+                maxlen = torch.maximum(maxlen, torch.scalar_tensor(1, device=maxlen.device))
+                mask = mask[:, :, :maxlen]
+                x = x[:, :, :maxlen]
+                if v is not None:
+                    v = v[:, :, :maxlen]
+                if uu is not None:
+                    uu = uu[:, :, :maxlen, :maxlen]
 
         return x, v, mask, uu
 
