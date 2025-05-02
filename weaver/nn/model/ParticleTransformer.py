@@ -16,6 +16,25 @@ from weaver.utils.logger import _logger
 def delta_phi(a, b):
     return (a - b + math.pi) % (2 * math.pi) - math.pi
 
+def _quantile_sort(vec: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """
+    vec : 1‑D tensor (lengths)
+    q   : scalar tensor in [0,1]
+    Returns the q‑quantile without using numel(), so it is safe for
+    TorchDynamo’s symbolic shapes.
+    """
+    # ❶ sort — OK with symbolic sizes
+    sorted_vec, _ = torch.sort(vec.view(-1))          # (N,)
+
+    # ❷ translate q   →   integer rank
+    # rank = round(q * (N‑1)); everything is SymInt‑friendly
+    N = sorted_vec.shape[0]                           # SymInt
+    rank = (q * (N - 1)).round().to(torch.long)       # scalar tensor
+    rank = rank.clamp_(0, N - 1)                      # safety
+
+    # ❸ gather
+    return sorted_vec[rank]                           # tensor scalar
+
 
 @torch.jit.script
 def delta_r2(eta1, phi1, eta2, phi2):
@@ -204,7 +223,8 @@ class SequenceTrimmer(nn.Module):
                         torch.empty(1, device= mask.device).uniform_(*self.target)[0]
                     )
 
-                    maxlen = torch.quantile(mask.type_as(x).sum(dim=-1), q).long()
+                    lengths = mask.sum(dim=-1).float()   # (B,1) or (B,)
+                    maxlen = _quantile_sort(lengths, q).long()
                     rand = torch.rand_like(mask.type_as(x))
                     rand.masked_fill_(~mask, -1)
                     perm = rand.argsort(dim=-1, descending=True)  # (N, 1, P)
