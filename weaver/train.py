@@ -20,10 +20,7 @@ from weaver.utils.import_tools import import_module
 
 import logging, torch._logging as tl
 
-tl.set_logs(
-    dynamo="debug",   # equivalent to +dynamo
-    recompiles=True   # turn on the artifact
-)
+tl.set_logs(dynamo=logging.DEBUG, recompiles=True)
 
 import warnings
 warnings.filterwarnings('ignore')  # Ignore all warnings to prevent compiler errors
