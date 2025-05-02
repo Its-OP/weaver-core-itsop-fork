@@ -203,8 +203,8 @@ class SequenceTrimmer(nn.Module):
                         torch.tensor(1.0, device= mask.device),
                         torch.empty(1, device= mask.device).uniform_(*self.target)[0]
                     )
-                    with torch.cuda.amp.autocast(enabled=False):
-                        maxlen = torch.quantile(mask.type_as(x).sum(dim=-1), q).long()
+
+                    maxlen = torch.quantile(mask.type_as(x).sum(dim=-1), q).long()
                     rand = torch.rand_like(mask.type_as(x))
                     rand.masked_fill_(~mask, -1)
                     perm = rand.argsort(dim=-1, descending=True)  # (N, 1, P)
