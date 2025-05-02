@@ -8,6 +8,7 @@ import copy
 import torch
 import torch.nn as nn
 from functools import partial
+from typing import Optional
 
 from weaver.utils.logger import _logger
 
@@ -273,106 +274,136 @@ class Embed(nn.Module):
 
 
 class PairEmbed(nn.Module):
+    """
+    Torch‑compile‑friendly version that avoids:
+      * in‑place tensor[index] = value with dynamic indices
+      * `with torch.no_grad()` inside forward
+      * graph breaks due to asserts that depend on tensor values
+    """
     def __init__(
-            self, pairwise_lv_dim, pairwise_input_dim, dims,
-            remove_self_pair=False, use_pre_activation_pair=True, mode='sum',
-            normalize_input=True, activation='gelu', eps=1e-8,
-            for_onnx=False):
+            self,
+            pairwise_lv_dim: int,
+            pairwise_input_dim: int,
+            dims,
+            *,
+            remove_self_pair: bool = False,
+            use_pre_activation_pair: bool = True,
+            mode: str = "sum",
+            normalize_input: bool = True,
+            activation: str = "gelu",
+            eps: float = 1e-8,
+            for_onnx: bool = False,
+            max_seq_len: int = 128,          # upper bound for triangular indices
+    ):
         super().__init__()
 
-        self.pairwise_lv_dim = pairwise_lv_dim
-        self.pairwise_input_dim = pairwise_input_dim
-        self.is_symmetric = (pairwise_lv_dim <= 5) and (pairwise_input_dim == 0)
-        self.remove_self_pair = remove_self_pair
-        self.mode = mode
-        self.for_onnx = for_onnx
-        self.pairwise_lv_fts = partial(pairwise_lv_fts, num_outputs=pairwise_lv_dim, eps=eps, for_onnx=for_onnx)
-        self.out_dim = dims[-1]
+        self.pairwise_lv_dim     = pairwise_lv_dim
+        self.pairwise_input_dim  = pairwise_input_dim
+        self.is_symmetric        = (pairwise_lv_dim <= 5) and (pairwise_input_dim == 0)
+        self.remove_self_pair    = remove_self_pair
+        self.mode                = mode
+        self.for_onnx            = for_onnx
+        self.pairwise_lv_fts     = partial(
+            pairwise_lv_fts,
+            num_outputs=pairwise_lv_dim,
+            eps=eps,
+            for_onnx=for_onnx,
+        )
+        self.out_dim             = dims[-1]
 
-        if self.mode == 'concat':
-            input_dim = pairwise_lv_dim + pairwise_input_dim
-            module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-            for dim in dims:
-                module_list.extend([
-                    nn.Conv1d(input_dim, dim, 1),
-                    nn.BatchNorm1d(dim),
-                    nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                ])
-                input_dim = dim
-            if use_pre_activation_pair:
-                module_list = module_list[:-1]
-            self.embed = nn.Sequential(*module_list)
-        elif self.mode == 'sum':
+        # --------------------------------------------------------------
+        # 1. feature‑embedding sub‑nets
+        # --------------------------------------------------------------
+        act   = nn.GELU if activation == "gelu" else nn.ReLU
+        def make_tower(in_dim):
+            layers = [nn.BatchNorm1d(in_dim)] if normalize_input else []
+            for d in dims:
+                layers += [nn.Conv1d(in_dim, d, 1), nn.BatchNorm1d(d), act()]
+                in_dim = d
+            if use_pre_activation_pair:           # remove last activation
+                layers = layers[:-1]
+            return nn.Sequential(*layers)
+
+        if mode == "concat":
+            self.embed     = make_tower(pairwise_lv_dim + pairwise_input_dim)
+        elif mode == "sum":
             if pairwise_lv_dim > 0:
-                input_dim = pairwise_lv_dim
-                module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                for dim in dims:
-                    module_list.extend([
-                        nn.Conv1d(input_dim, dim, 1),
-                        nn.BatchNorm1d(dim),
-                        nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                    ])
-                    input_dim = dim
-                if use_pre_activation_pair:
-                    module_list = module_list[:-1]
-                self.embed = nn.Sequential(*module_list)
-
+                self.embed     = make_tower(pairwise_lv_dim)
             if pairwise_input_dim > 0:
-                input_dim = pairwise_input_dim
-                module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                for dim in dims:
-                    module_list.extend([
-                        nn.Conv1d(input_dim, dim, 1),
-                        nn.BatchNorm1d(dim),
-                        nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                    ])
-                    input_dim = dim
-                if use_pre_activation_pair:
-                    module_list = module_list[:-1]
-                self.fts_embed = nn.Sequential(*module_list)
+                self.fts_embed = make_tower(pairwise_input_dim)
         else:
-            raise RuntimeError('`mode` can only be `sum` or `concat`')
+            raise ValueError("`mode` must be 'sum' or 'concat'")
 
-    def forward(self, x, uu=None):
-        # x: (batch, v_dim, seq_len)
-        # uu: (batch, v_dim, seq_len, seq_len)
-        assert (x is not None or uu is not None)
-        with torch.no_grad():
+        # --------------------------------------------------------------
+        # 2. constant triangular indices (registered buffers)
+        # --------------------------------------------------------------
+        if self.is_symmetric and not self.for_onnx:
+            ii, jj = torch.tril_indices(max_seq_len, max_seq_len, offset=0)
+            # ‑‑ not persistent → will NOT appear in state_dict
+            self.register_buffer("_tril_i", ii, persistent=False)
+            self.register_buffer("_tril_j", jj, persistent=False)
+
+    # ------------------------------------------------------------------
+    # forward -----------------------------------------------------------
+    # ------------------------------------------------------------------
+    @torch.jit.ignore  # (optional) keeps JIT happy when max_seq_len changes
+    def _get_tril_indices(self, seq_len: int, device):
+        """Return i,j up to `seq_len`, with/without diagonal."""
+        i = self._tril_i[:seq_len].to(device)
+        j = self._tril_j[:seq_len].to(device)
+        if self.remove_self_pair:
+            mask = i != j
+            i, j = i[mask], j[mask]
+        return i, j
+
+    # ------------------------------------------------------------------
+    def forward(
+            self,
+            x : Optional[torch.Tensor],   # shape (B, v_dim, L)
+            uu: Optional[torch.Tensor]=None,  # shape (B, v_dim, L, L)
+    ):
+        if x is None and uu is None:
+            raise ValueError("Either x or uu must be provided")
+
+        if x is not None:
+            B, _, L = x.shape
+        else:
+            B, _, L, _ = uu.shape
+
+        # --------------------------------------------------------------
+        # 1. pairwise low‑level features
+        # --------------------------------------------------------------
+        if self.is_symmetric and not self.for_onnx:
+            i, j = self._get_tril_indices(L, (x if x is not None else uu).device)
+
             if x is not None:
-                batch_size, _, seq_len = x.size()
-            else:
-                batch_size, _, seq_len, _ = uu.size()
-            if self.is_symmetric and not self.for_onnx:
-                i, j = torch.tril_indices(seq_len, seq_len, offset=-1 if self.remove_self_pair else 0,
-                                          device=(x if x is not None else uu).device)
-                if x is not None:
-                    x = x.unsqueeze(-1).repeat(1, 1, 1, seq_len)
-                    xi = x[:, :, i, j]  # (batch, dim, seq_len*(seq_len+1)/2)
-                    xj = x[:, :, j, i]
-                    x = self.pairwise_lv_fts(xi, xj)
-                if uu is not None:
-                    # (batch, dim, seq_len*(seq_len+1)/2)
-                    uu = uu[:, :, i, j]
-            else:
-                if x is not None:
-                    x = self.pairwise_lv_fts(x.unsqueeze(-1), x.unsqueeze(-2))
-                    if self.remove_self_pair:
-                        i = torch.arange(0, seq_len, device=x.device)
-                        x[:, :, i, i] = 0
-                    x = x.view(-1, self.pairwise_lv_dim, seq_len * seq_len)
-                if uu is not None:
-                    uu = uu.view(-1, self.pairwise_input_dim, seq_len * seq_len)
-            if self.mode == 'concat':
-                if x is None:
-                    pair_fts = uu
-                elif uu is None:
-                    pair_fts = x
-                else:
-                    pair_fts = torch.cat((x, uu), dim=1)
+                # broadcast instead of repeat
+                x_exp = x.unsqueeze(-1).expand(-1, -1, -1, L)
+                xi    = x_exp[:, :, i, j]
+                xj    = x_exp[:, :, j, i]
+                x     = self.pairwise_lv_fts(xi, xj)      # (B, d_lv, N_pair)
 
-        if self.mode == 'concat':
-            elements = self.embed(pair_fts)  # (batch, embed_dim, num_elements)
-        elif self.mode == 'sum':
+            if uu is not None:
+                uu = uu[:, :, i, j]                       # (B, d_fts, N_pair)
+
+        else:  # non‑symmetric or ONNX
+            if x is not None:
+                x = self.pairwise_lv_fts(x.unsqueeze(-1), x.unsqueeze(-2))
+                if self.remove_self_pair:                 # zero diagonal WITHOUT in‑place idx‑put
+                    diag_mask = torch.eye(L, dtype=torch.bool, device=x.device)
+                    x = x.masked_fill(diag_mask, 0.0)
+                x = x.reshape(B, self.pairwise_lv_dim, -1)
+
+            if uu is not None:
+                uu = uu.reshape(B, self.pairwise_input_dim, -1)
+
+        # --------------------------------------------------------------
+        # 2. fuse / embed
+        # --------------------------------------------------------------
+        if self.mode == "concat":
+            pair_fts = uu if x is None else x if uu is None else torch.cat((x, uu), dim=1)
+            elements = self.embed(pair_fts)               # (B, d_out, N_elem)
+        else:  # "sum"
             if x is None:
                 elements = self.fts_embed(uu)
             elif uu is None:
@@ -380,12 +411,21 @@ class PairEmbed(nn.Module):
             else:
                 elements = self.embed(x) + self.fts_embed(uu)
 
+        # --------------------------------------------------------------
+        # 3. recover square matrix without forbidden in‑place writes
+        # --------------------------------------------------------------
         if self.is_symmetric and not self.for_onnx:
-            y = torch.zeros(batch_size, self.out_dim, seq_len, seq_len, dtype=elements.dtype, device=elements.device)
-            y[:, :, i, j] = elements
-            y[:, :, j, i] = elements
+            flat_idx  = i * L + j                         # flatten (i,j)
+            y         = elements.new_zeros(B, self.out_dim, L * L)
+            y.scatter_(2, flat_idx.expand(B, self.out_dim, -1), elements)  # fill lower‑tri
+            y         = y.view(B, self.out_dim, L, L)
+            y         = y + y.transpose(-1, -2)           # mirror to upper‑tri
+            if not self.remove_self_pair:
+                # diagonal was written twice; average keeps same value
+                y.mul_(0.5)
         else:
-            y = elements.view(-1, self.out_dim, seq_len, seq_len)
+            y = elements.view(B, self.out_dim, L, L)
+
         return y
 
 
