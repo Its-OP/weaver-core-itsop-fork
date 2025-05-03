@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from functools import partial
 
+from weaver.nn.model.MinimalMultiHeadAttention import MinimalMultiheadAttention
 from weaver.utils.logger import _logger
 
 
@@ -385,7 +386,14 @@ class Block(nn.Module):
         self.ffn_dim = embed_dim * ffn_ratio
 
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(
+        # self.attn = nn.MultiheadAttention(
+        #     embed_dim,
+        #     num_heads,
+        #     dropout=attn_dropout,
+        #     add_bias_kv=add_bias_kv,
+        # )
+
+        self.attn = MinimalMultiheadAttention(
             embed_dim,
             num_heads,
             dropout=attn_dropout,
