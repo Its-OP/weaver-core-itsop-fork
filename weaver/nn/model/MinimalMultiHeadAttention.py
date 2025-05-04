@@ -102,7 +102,6 @@ class MinimalMultiheadAttention(nn.Module):
         key: torch.Tensor,
         value: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
-        need_weights: bool = True,
         attn_mask: Optional[torch.Tensor] = None,
         avg_attn_weights: bool = True,
         is_causal: bool = False,
@@ -194,42 +193,8 @@ class MinimalMultiheadAttention(nn.Module):
         )  # (N, L, E)
         attn_output = self.out_proj(attn_output)  # (N, L, E)
 
-        if not need_weights:
-            attn_weights = None
-        else:
-            # Build attention weights *after* softmax/dropout so they exactly
-            # match the semantics of the reference implementation.
-            # Re‑compute scores with the same mask — luckily this is lightweight
-            # compared to the proj weights and keeps the public contract intact.
-            scores = torch.matmul(q, k.transpose(-2, -1))  # (N, H, L, S)
-            scores *= self.scaling
-
-            if merged_mask is not None:
-                if merged_mask.dtype == torch.bool:
-                    scores = scores.masked_fill(merged_mask, float("-inf"))
-                else:
-                    scores = scores + merged_mask
-
-            if is_causal:
-                causal_mask = torch.triu(
-                    torch.ones_like(scores, dtype=torch.bool), 1
-                )
-                scores.masked_fill_(causal_mask, float("-inf"))
-
-            attn_weights = F.softmax(scores, dim=-1)
-            attn_weights = F.dropout(
-                attn_weights, p=self.dropout, training=self.training
-            )
-
-            if avg_attn_weights:
-                # Average across heads to mimic *(N, L, S)* return shape
-                attn_weights = attn_weights.mean(dim=1)  # (N, L, S)
-
         # Return to (L, N, E) if user passed sequence‑first
         if not self.batch_first:
             attn_output = attn_output.transpose(0, 1)
-            if need_weights and avg_attn_weights:
-                # weights are (N, L, S) – no transpose needed
-                pass
 
-        return attn_output, attn_weights
+        return attn_output, None
