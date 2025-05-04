@@ -103,7 +103,6 @@ class MinimalMultiheadAttention(nn.Module):
         value: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
         attn_mask: Optional[torch.Tensor] = None,
-        avg_attn_weights: bool = True,
         is_causal: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
@@ -159,9 +158,7 @@ class MinimalMultiheadAttention(nn.Module):
                 float_attn_mask = attn_mask
 
         if key_padding_mask is not None:
-            # key_padding_mask: (N, S)  -> (N, 1, 1, S)
-            padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool)
-            bool_attn_mask = self._merge_bool_masks(bool_attn_mask, padding_mask)
+            bool_attn_mask = self._merge_bool_masks(bool_attn_mask, key_padding_mask)
 
         # ``scaled_dot_product_attention`` accepts ONE mask argument that can be:
         #    • bool  (True = masked)
