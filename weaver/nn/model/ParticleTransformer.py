@@ -11,7 +11,7 @@ import torch.nn as nn
 from functools import partial
 
 from weaver.nn.model.MinimalMultiHeadAttention import MinimalMultiheadAttention
-from weaver.nn.model.new_arch_modules import EfficientAttention
+from weaver.nn.model.new_arch_modules import EfficientAttention, AlteredBlock
 from weaver.utils.logger import _logger
 
 
@@ -387,19 +387,13 @@ class Block(nn.Module):
         self.ffn_dim = embed_dim * ffn_ratio
 
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
-        self.attn = EfficientAttention(
+
+        self.attn = nn.MultiheadAttention(
             embed_dim,
             num_heads,
-            attn_dropout=attn_dropout,
+            dropout=attn_dropout,
             add_bias_kv=add_bias_kv,
         )
-
-        # self.attn = nn.MultiheadAttention(
-        #     embed_dim,
-        #     num_heads,
-        #     dropout=attn_dropout,
-        #     add_bias_kv=add_bias_kv,
-        # )
         self.post_attn_norm = nn.LayerNorm(embed_dim) if scale_attn else None
         self.dropout = nn.Dropout(dropout)
 
@@ -521,8 +515,8 @@ class ParticleTransformer(nn.Module):
             pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
             remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
             for_onnx=for_inference) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
-        self.blocks = nn.ModuleList([Block(**cfg_block) for _ in range(num_layers)])
-        self.cls_blocks = nn.ModuleList([Block(**cfg_cls_block) for _ in range(num_cls_layers)])
+        self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
+        self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
         self.norm = nn.LayerNorm(embed_dim)
 
         if fc_params is not None:
