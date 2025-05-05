@@ -387,13 +387,6 @@ class Block(nn.Module):
         self.ffn_dim = embed_dim * ffn_ratio
 
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
-        # self.attn = nn.MultiheadAttention(
-        #     embed_dim,
-        #     num_heads,
-        #     dropout=attn_dropout,
-        #     add_bias_kv=add_bias_kv,
-        # )
-
         self.attn = EfficientAttention(
             embed_dim,
             num_heads,
@@ -438,8 +431,10 @@ class Block(nn.Module):
         else:
             residual = x
             x = self.pre_attn_norm(x)
+            padding_mask = padding_mask.float() * -1e9  # avoid deprecation
             x = self.attn(x, x, x, key_padding_mask=padding_mask,
                           attn_mask=attn_mask)[0]  # (seq_len, batch, embed_dim)
+
         if self.c_attn is not None:
             tgt_len = x.size(0)
             x = x.view(tgt_len, -1, self.num_heads, self.head_dim)
@@ -448,9 +443,6 @@ class Block(nn.Module):
         if self.post_attn_norm is not None:
             x = self.post_attn_norm(x)
         x = self.dropout(x)
-
-        print(x.size())
-        print(residual.size())
         x += residual
 
         residual = x
