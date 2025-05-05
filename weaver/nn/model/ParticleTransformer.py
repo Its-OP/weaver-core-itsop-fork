@@ -431,7 +431,6 @@ class Block(nn.Module):
         else:
             residual = x
             x = self.pre_attn_norm(x)
-            padding_mask = padding_mask.float() * -1e9  # avoid deprecation
             x = self.attn(x, x, x, key_padding_mask=padding_mask,
                           attn_mask=attn_mask)[0]  # (seq_len, batch, embed_dim)
 
