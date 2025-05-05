@@ -435,7 +435,6 @@ class Block(nn.Module):
             x = self.attn(x, x, x, key_padding_mask=padding_mask,
                           attn_mask=attn_mask)[0]  # (seq_len, batch, embed_dim)
         
-        raise ValueError()
         if self.c_attn is not None:
             tgt_len = x.size(0)
             x = x.view(tgt_len, -1, self.num_heads, self.head_dim)
