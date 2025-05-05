@@ -153,7 +153,10 @@ class MinimalMultiheadAttention(nn.Module):
             batch_first = False (default):    (L, N, E)
             batch_first = True:               (N, L, E)
         """
-
+        
+        if attn_mask is not None:
+            print(f'attn_mask: {attn_mask.dtype}')
+        
         # ---- 1. normalise layout to (L, N, E) ---------------------------
         if self.batch_first:  # user passed (N, L, E)
             query, key, value = query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1)
