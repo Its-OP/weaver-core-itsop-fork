@@ -3,6 +3,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 
+# New: runtime control / checks for SDPA back‑end
+try:
+    # PyTorch ≥2.1 provides these symbols.  If they are missing we silently
+    # fall back to the stock behaviour (which may use the math kernel).
+    from torch.backends.cuda import (
+        sdp_kernel,  # context manager to pin the chosen backend
+        SDPAParams,  # structure describing the call parameters
+        can_use_flash_attention,
+    )
+except ImportError:  # running on CPU build or <2.1
+    sdp_kernel = None
+    SDPAParams = None
+    can_use_flash_attention = None
+
 
 class MinimalMultiheadAttention(nn.Module):
     r"""
@@ -59,11 +73,11 @@ class MinimalMultiheadAttention(nn.Module):
             )
 
         # ---- hyper-parameters -------------------------------------------
-        self.embed_dim = embed_dim                      # E
-        self.num_heads = num_heads                      # H
-        self.head_dim = embed_dim // num_heads          # Dh
+        self.embed_dim = embed_dim  # E
+        self.num_heads = num_heads  # H
+        self.head_dim = embed_dim // num_heads  # Dh
         self.dropout = float(dropout)
-        self.batch_first = batch_first                  # layout convention flag
+        self.batch_first = batch_first  # layout convention flag
 
         # ---- learnable projections --------------------------------------
         # Each projects (E) → (E).  Separating Q/K/V keeps the code easy to
@@ -97,9 +111,9 @@ class MinimalMultiheadAttention(nn.Module):
             (N, H, seq_len, Dh)
         """
         return (
-            x.contiguous()                                   # ensure we can view()
+            x.contiguous()  # ensure we can view()
             .view(batch_size, seq_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)                                # move H before L
+            .transpose(1, 2)  # move H before L
         )
 
     @staticmethod
@@ -117,7 +131,6 @@ class MinimalMultiheadAttention(nn.Module):
         unmasked entries are 0 and masked entries are ``-inf``.
         """
         return mask.to(dtype).masked_fill(mask, float("-inf"))
-
 
     # ------------------------------------------------------------------
     # forward pass
@@ -146,13 +159,13 @@ class MinimalMultiheadAttention(nn.Module):
             query, key, value = query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1)
 
         tgt_len, batch_size, _ = query.size()  # L, N
-        src_len = key.size(0)                  # S (may grow by +1 if bias token)
+        src_len = key.size(0)  # S (may grow by +1 if bias token)
 
         # ---- 2. bias_k / bias_v trick (optional) ------------------------
         # Adds a learned *global* token to K and V that every Q can attend to.
         if self.bias_k is not None and self.bias_v is not None:
             # Concatenate along the sequence dimension → shapes become (S+1, N, E)
-            key   = torch.cat([key,   self.bias_k.repeat(1, batch_size, 1)], dim=0)
+            key = torch.cat([key, self.bias_k.repeat(1, batch_size, 1)], dim=0)
             value = torch.cat([value, self.bias_v.repeat(1, batch_size, 1)], dim=0)
 
             # Expand padding mask so the new token is *never* masked out.
@@ -164,19 +177,19 @@ class MinimalMultiheadAttention(nn.Module):
 
         # ---- 3. linear projections  (still flat → (L/S, N, E)) ---------
         q = self.q_proj(query) * self.scaling  # scale only Q → (L, N, E)
-        k = self.k_proj(key)                   # (S, N, E)
-        v = self.v_proj(value)                 # (S, N, E)
+        k = self.k_proj(key)  # (S, N, E)
+        v = self.v_proj(value)  # (S, N, E)
 
         # ---- 4. reshape to multi-head view  (N, H, L/S, Dh) ------------
-        q = self._shape(q, batch_size, tgt_len)   # (N, H, L, Dh)
-        k = self._shape(k, batch_size, src_len)   # (N, H, S, Dh)
-        v = self._shape(v, batch_size, src_len)   # (N, H, S, Dh)
+        q = self._shape(q, batch_size, tgt_len)  # (N, H, L, Dh)
+        k = self._shape(k, batch_size, src_len)  # (N, H, S, Dh)
+        v = self._shape(v, batch_size, src_len)  # (N, H, S, Dh)
 
         # ------------------------------------------------------------------
         # 5. Mask handling – *preserve* additive float mask & apply bool mask
         # ------------------------------------------------------------------
         bool_attn_mask: Optional[torch.Tensor] = None  # True → masked
-        float_attn_mask: Optional[torch.Tensor] = None # additive
+        float_attn_mask: Optional[torch.Tensor] = None  # additive
 
         if attn_mask is not None:
             if attn_mask.dtype == torch.bool:
@@ -219,21 +232,44 @@ class MinimalMultiheadAttention(nn.Module):
         # ---- 6. core scaled-dot-product attention -----------------------
         # Calls into the highly-optimised fused kernel (FlashAttention where available).
         # Output shape: (N, H, L, Dh)
-        attn_output = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=merged_mask,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal,
-            scale=1
-        )
+        if (
+            can_use_flash_attention is not None
+            and query.is_cuda
+            and not can_use_flash_attention(
+                SDPAParams(
+                    q, k, v, merged_mask, self.dropout if self.training else 0.0, is_causal
+                )
+            )
+        ):
+            raise RuntimeError(
+                "FlashAttention unavailable for these inputs – ensure dtype/shape/hardware meet kernel constraints."
+            )
+
+        if sdp_kernel is not None and query.is_cuda:
+            kernel_cm = sdp_kernel(
+                enable_flash=True, enable_mem_efficient=False, enable_math=False
+            )
+        else:
+            # CPU path or old PyTorch – no special backend control
+            kernel_cm = torch.no_grad() if not self.training else torch.enable_grad()
+
+        with kernel_cm:
+            attn_output = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=merged_mask,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=is_causal,
+                scale=1)
 
         # ---- 7. combine heads & final projection ------------------------
-        attn_output = attn_output.transpose(1, 2).contiguous()         # (N, L, H, Dh)
+        attn_output = attn_output.transpose(1, 2).contiguous()  # (N, L, H, Dh)
         attn_output = attn_output.view(batch_size, tgt_len, self.embed_dim)  # (N, L, E)
-        attn_output = self.out_proj(attn_output)                       # (N, L, E)
+        attn_output = self.out_proj(attn_output)  # (N, L, E)
 
         # ---- 8. restore original layout if needed ----------------------
-        if not self.batch_first:            # user expects (L, N, E)
+        if not self.batch_first:  # user expects (L, N, E)
             attn_output = attn_output.transpose(0, 1)
 
         # Return the output and a placeholder ``None`` to mirror the stock API
