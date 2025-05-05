@@ -387,19 +387,19 @@ class Block(nn.Module):
         self.ffn_dim = embed_dim * ffn_ratio
 
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
-        # self.attn = EfficientAttention(
-        #     embed_dim,
-        #     num_heads,
-        #     attn_dropout=attn_dropout,
-        #     add_bias_kv=add_bias_kv,
-        # )
-
-        self.attn = nn.MultiheadAttention(
+        self.attn = EfficientAttention(
             embed_dim,
             num_heads,
-            dropout=attn_dropout,
+            attn_dropout=attn_dropout,
             add_bias_kv=add_bias_kv,
         )
+
+        # self.attn = nn.MultiheadAttention(
+        #     embed_dim,
+        #     num_heads,
+        #     dropout=attn_dropout,
+        #     add_bias_kv=add_bias_kv,
+        # )
         self.post_attn_norm = nn.LayerNorm(embed_dim) if scale_attn else None
         self.dropout = nn.Dropout(dropout)
 

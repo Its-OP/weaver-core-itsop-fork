@@ -150,10 +150,13 @@ class EfficientAttention(nn.Module):
             
             attn_output = torch.cat(head_outputs, dim=1)  # (B, num_heads, Lq, head_dim)
 
+        print(attn_output.size())
         # shape: (B, Lq, embed_dim)
         attn_output = attn_output.transpose(1, 2).reshape(B, Lq, self.embed_dim)
+        print(attn_output.size())
         # shape: (Lq, B, embed_dim)
         attn_output = attn_output.transpose(0, 1)
+        print(attn_output.size())
 
         # Final projection of the results
         # shape: (Lq, B, embed_dim)
